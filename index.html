@@ -78,7 +78,10 @@
   .dpad-btn{background:rgba(201,168,76,.1);border:1px solid rgba(201,168,76,.25);border-radius:8px;color:var(--gold-light);font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .08s;user-select:none;}
   .dpad-btn:active{background:rgba(201,168,76,.3);transform:scale(.92);}
   .dpad-empty{visibility:hidden;}
-  @media(hover:none)and(pointer:coarse){.dpad{display:block;}.kbd-hint{display:none;}}
+  /* D-pad toujours visible */
+  .dpad{display:block !important;}
+  /* Hint clavier caché sur mobile */
+  @media(hover:none)and(pointer:coarse){.kbd-hint{display:none;}}
   .kbd-hint{font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;text-align:center;}
 
   /* ── Leaderboard ── */
@@ -272,7 +275,7 @@ const SPEED_MAP = [
    STATE
    ═══════════════════════════════════════════════ */
 let playerName = '';
-let snake, dir, nextDir, hearts, score, best, loopTimer, running;
+let snake, dir, dirQueue, hearts, score, best, loopTimer, running;
 let leaderboard = [];
 best = 0;
 
@@ -315,10 +318,10 @@ function startGame() {
    ═══════════════════════════════════════════════ */
 function initGame() {
   clearTimeout(loopTimer);
-  snake   = [{x:6,y:5},{x:5,y:5},{x:4,y:5}];
-  dir     = {x:1,y:0};
-  nextDir = {x:1,y:0};
-  hearts  = [];
+  snake    = [{x:6,y:5},{x:5,y:5},{x:4,y:5}];
+  dir      = {x:1,y:0};
+  dirQueue = [];          // file d'attente — max 2 entrées
+  hearts   = [];
   score   = 0;
   running = false;
   spawnHeart();
@@ -375,7 +378,16 @@ function scheduleLoop() { clearTimeout(loopTimer); loopTimer = setTimeout(tick, 
 
 function tick() {
   if (!running) return;
-  dir = {...nextDir};
+
+  // Consomme la prochaine direction valide dans la file
+  while (dirQueue.length) {
+    const candidate = dirQueue.shift();
+    // Ignore le demi-tour par rapport à la direction ACTUELLE
+    if (candidate.x !== -dir.x || candidate.y !== -dir.y) {
+      dir = candidate;
+      break;
+    }
+  }
   const head = {x:snake[0].x+dir.x, y:snake[0].y+dir.y};
 
   if (head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS) return endGame();
@@ -495,28 +507,46 @@ function updateUI() {
 }
 
 /* ═══════════════════════════════════════════════
-   INPUT
+   INPUT — file d'attente (max 2) pour ne rater
+   aucune direction saisie rapidement
    ═══════════════════════════════════════════════ */
 const KEYS = {ArrowUp:{x:0,y:-1},ArrowDown:{x:0,y:1},ArrowLeft:{x:-1,y:0},ArrowRight:{x:1,y:0},w:{x:0,y:-1},s:{x:0,y:1},a:{x:-1,y:0},d:{x:1,y:0}};
-document.addEventListener('keydown', e => {
-  if (!running) return;
-  const d=KEYS[e.key]; if(!d) return;
-  if(d.x===-dir.x&&d.y===-dir.y) return;
-  nextDir=d; e.preventDefault();
-});
-function dpadDir(d){ if(!running) return; if(d.x===-dir.x&&d.y===-dir.y) return; nextDir=d; }
-document.getElementById('btnUp').addEventListener('click',   ()=>dpadDir({x:0,y:-1}));
-document.getElementById('btnDown').addEventListener('click', ()=>dpadDir({x:0,y:1}));
-document.getElementById('btnLeft').addEventListener('click', ()=>dpadDir({x:-1,y:0}));
-document.getElementById('btnRight').addEventListener('click',()=>dpadDir({x:1,y:0}));
 
+function enqueueDir(d) {
+  if (!running) return;
+  // Direction de référence = dernière dans la file, ou dir courante
+  const ref = dirQueue.length ? dirQueue[dirQueue.length-1] : dir;
+  // Ignore le demi-tour et les doublons consécutifs
+  if (d.x === -ref.x && d.y === -ref.y) return;
+  if (d.x === ref.x  && d.y === ref.y)  return;
+  // Max 2 directions en attente
+  if (dirQueue.length < 2) dirQueue.push(d);
+}
+
+document.addEventListener('keydown', e => {
+  const d = KEYS[e.key]; if (!d) return;
+  enqueueDir(d); e.preventDefault();
+});
+
+document.getElementById('btnUp').addEventListener('click',    () => enqueueDir({x:0,y:-1}));
+document.getElementById('btnDown').addEventListener('click',  () => enqueueDir({x:0,y:1}));
+document.getElementById('btnLeft').addEventListener('click',  () => enqueueDir({x:-1,y:0}));
+document.getElementById('btnRight').addEventListener('click', () => enqueueDir({x:1,y:0}));
+
+// Swipe avec seuil minimum 20px pour éviter les faux déclenchements
 let touchOrig=null;
-canvas.addEventListener('touchstart',e=>{touchOrig={x:e.touches[0].clientX,y:e.touches[0].clientY};},{passive:true});
+canvas.addEventListener('touchstart',e=>{
+  touchOrig={x:e.touches[0].clientX, y:e.touches[0].clientY};
+},{passive:true});
 canvas.addEventListener('touchend',e=>{
   if(!touchOrig||!running)return;
-  const dx=e.changedTouches[0].clientX-touchOrig.x, dy=e.changedTouches[0].clientY-touchOrig.y;
-  if(Math.abs(dx)>Math.abs(dy)) dpadDir(dx>0?{x:1,y:0}:{x:-1,y:0});
-  else dpadDir(dy>0?{x:0,y:1}:{x:0,y:-1});
+  const dx=e.changedTouches[0].clientX-touchOrig.x;
+  const dy=e.changedTouches[0].clientY-touchOrig.y;
+  const dist = Math.sqrt(dx*dx+dy*dy);
+  if (dist > 20) {  // seuil 20px
+    if(Math.abs(dx)>Math.abs(dy)) enqueueDir(dx>0?{x:1,y:0}:{x:-1,y:0});
+    else enqueueDir(dy>0?{x:0,y:1}:{x:0,y:-1});
+  }
   touchOrig=null;
 },{passive:true});
 
